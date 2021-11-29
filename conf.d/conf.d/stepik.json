@@ -1,0 +1,16 @@
+{
+  "nti9_testing": {
+    "SERVER": "https://stepik.org/api",
+    "CONNECTIONS": 1,
+    "AUTH": [
+      "nti9@external.grader",
+      "AIh2tEvMozYTUL61"
+    ],
+    "HANDLERS": [
+      {
+        "HANDLER": "xqueue_watcher.grader.Grader"
+      }
+    ]
+  }
+}
+

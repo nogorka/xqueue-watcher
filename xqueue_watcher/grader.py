@@ -8,10 +8,15 @@ import sys
 import cgi
 import time
 import json
+
+import requests
 from path import Path
 import logging
 import multiprocessing
 from statsd import statsd
+from skimage.metrics import structural_similarity as compare_ssim
+import cv2
+from tempfile import NamedTemporaryFile
 
 
 def format_errors(errors):
@@ -35,10 +40,34 @@ def to_dict(result):
         long_desc = ''
     return {'short-description': esc(result[0]),
             'long-description': long_desc,
-            'correct': result[2],   # Boolean; don't escape.
+            'correct': result[2],  # Boolean; don't escape.
             'expected-output': esc(result[3]),
             'actual-output': esc(result[4])
             }
+
+
+def get_user_file(file_url):
+    req = requests.get(file_url, stream=True)
+    fd = NamedTemporaryFile()
+    for chunk in req.iter_content():
+        fd.write(chunk)
+    fd.seek(0)
+    return fd
+
+
+def check_render(filename):
+    original_path = 'img/001.png'
+
+    original_img = cv2.imread(original_path)
+    student_img = cv2.imread(filename)
+
+    if original_img is not None:
+        if student_img is not None:
+            original_gray = cv2.cvtColor(original_img, cv2.COLOR_BGR2GRAY)
+            student_gray = cv2.cvtColor(student_img, cv2.COLOR_BGR2GRAY)
+            return compare_ssim(original_gray, student_gray, full=True)[0] * 100
+
+    return -1
 
 
 class Grader(object):
@@ -108,8 +137,39 @@ class Grader(object):
         else:
             return self.process_item(content)
 
-    def grade(self, grader_path, grader_config, student_response):
-        raise NotImplementedError("no grader defined")
+    filename = 'render.png'
+
+    def grade(self, grader_path, grader_config, files):
+        score = 0
+        files_json = json.loads(files)
+        if self.filename in files_json:
+            path = files_json[self.filename]
+
+            fd = get_user_file(path)
+            filename = fd.name
+
+            score = check_render(filename)
+
+            fd.close()
+
+        wrong_result = {
+            'score': 0,
+            'msg': "Something is incorrect, try again!",
+        }
+        correct_result = {
+            'score': 1,
+            'msg': "Good job!",
+        }
+        server_work = {
+            'score': 0,
+            'msg': "Something is incorrect at the server side, connect to administrator",
+        }
+        if score == -1:
+            return server_work
+        if score > 95:
+            return correct_result
+        else:
+            return wrong_result
 
     def process_item(self, content, queue=None):
         try:
@@ -132,17 +192,18 @@ class Grader(object):
                 raise
 
             self.log.debug("Processing submission, grader payload: {0}".format(payload))
-            relative_grader_path = grader_config['grader']
+            relative_grader_path = ''
             grader_path = (self.grader_root / relative_grader_path).abspath()
             start = time.time()
-            results = self.grade(grader_path, grader_config, student_response)
+            results = self.grade(grader_path, grader_config, files)
 
             statsd.histogram('xqueuewatcher.grading-time', time.time() - start)
 
             # Make valid JSON message
-            reply = {'correct': results['correct'],
-                     'score': results['score'],
-                     'msg': self.render_results(results)}
+            reply = {
+                'score': results['score'],
+                'msg': results['msg'],
+            }
 
             statsd.increment('xqueuewatcher.replies (non-exception)')
         except Exception as e:
